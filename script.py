@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import datetime
 import mimetypes
@@ -25,7 +26,17 @@ stats = {
 def get_best_file_time(path):
     created = datetime.datetime.fromtimestamp(os.path.getctime(path))
     modified = datetime.datetime.fromtimestamp(os.path.getmtime(path))
-    return min(created, modified)
+    best_time = min(created, modified)
+
+    # Regex: look for \YYYY\ in the full path
+    match = re.search(r"[\\/](\d{4})(?=[\\/])", path)
+    if match:
+        folder_year = int(match.group(1))
+        # If both times are newer than folder year → fallback
+        if best_time.year > folder_year:
+            best_time = datetime.datetime(folder_year, 12, 31, 23, 59, 59)
+
+    return best_time
 
 def has_exif_datetime(path):
     try:
@@ -48,6 +59,36 @@ def set_exif_datetime(path, dt):
     piexif.insert(exif_bytes, path)
     print(f"[PHOTO] Set DateTimeOriginal for {path} -> {formatted}")
     stats["photos_changed"] += 1
+
+def create_xmp_sidecar(path, dt):
+    """Write XMP sidecar with CreateDate for formats without EXIF."""
+    sidecar_path = path + ".xmp"
+    formatted = dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+    xmp_template = f"""<?xpacket begin='' id='W5M0MpCehiHzreSzNTczkc9d'?>
+<x:xmpmeta xmlns:x='adobe:ns:meta/' x:xmptk='Python-Sidecar-Generator'>
+ <rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+  <rdf:Description rdf:about=''
+    xmlns:xmp='http://ns.adobe.com/xap/1.0/'>
+   <xmp:CreateDate>{formatted}</xmp:CreateDate>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end='w'?>"""
+
+    if DRY_RUN:
+        print(f"[DRY-RUN][SIDECAR] Would create {sidecar_path} -> {formatted}")
+        stats["photos_changed"] += 1
+        return
+
+    try:
+        with open(sidecar_path, "w", encoding="utf-8") as f:
+            f.write(xmp_template)
+        print(f"[SIDECAR] Created {sidecar_path} -> {formatted}")
+        stats["photos_changed"] += 1
+    except Exception as e:
+        print(f"[ERROR] Failed to write sidecar for {path}: {e}")
+        stats["errors"] += 1
 
 def process_photo(path):
     ext = os.path.splitext(path)[1].lower()
@@ -165,8 +206,11 @@ def main():
             ext = os.path.splitext(path)[1].lower()
             stats["scanned"] += 1
 
-            if ext in [".jpg", ".jpeg", ".tif", ".tiff", ".png"]:  # PNG now skipped explicitly
+            if ext in [".jpg", ".jpeg", ".tif", ".tiff"]:
                 process_photo(path)
+            elif ext in [".png", ".bmp", ".gif", ".webp"]:
+                chosen_dt = get_best_file_time(path)
+                create_xmp_sidecar(path, chosen_dt)
             elif ext == ".avi":
                 process_avi(path)
             elif ext in [".mp4", ".mov", ".m4v", ".3gp", ".3g2"]:
