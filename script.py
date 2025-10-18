@@ -6,13 +6,27 @@ import mimetypes
 import piexif
 import subprocess
 
-# Folder to scan
-ROOT_DIR = r"C:\siirto"
+#python script.py "C:\siirto\Filtered" --from-whatsapp --dry-run
+
+
+# --- Folder to scan (required argument) ---
+if len(sys.argv) < 2 or sys.argv[1].startswith("--"):
+    print("Usage: python fixmeta.py <folder_path> [--from-whatsapp] [--dry-run] [--delete-originals]")
+    sys.exit(1)
+
+ROOT_DIR = sys.argv[1]
+
+if not os.path.isdir(ROOT_DIR):
+    print(f"Error: '{ROOT_DIR}' is not a valid directory.")
+    sys.exit(1)
 
 # Dry run flag
 DRY_RUN = "--dry-run" in sys.argv
 # For converted .avi files. Normally originals are left untouched, but can be deleted with this flag
 DELETE_ORIGINALS = "--delete-originals" in sys.argv
+# WhatsApp filename mode
+WHATSAPP_MODE = "--from-whatsapp" in sys.argv
+WHATSAPP_PATTERN = re.compile(r"^(?:IMG|VID)-(?P<date>\d{8})-WA\d+", re.IGNORECASE)
 
 # Stats counters
 stats = {
@@ -37,6 +51,18 @@ def get_best_file_time(path):
             best_time = datetime.datetime(folder_year, 12, 31, 23, 59, 59)
 
     return best_time
+
+def get_whatsapp_date_from_filename(filename):
+    """Extract datetime from WhatsApp-style filenames like IMG-20231005-WA1234."""
+    m = WHATSAPP_PATTERN.match(os.path.basename(filename))
+    if not m:
+        return None
+    try:
+        date_str = m.group("date")
+        dt = datetime.datetime.strptime(date_str, "%Y%m%d")
+        return dt
+    except Exception:
+        return None
 
 def has_exif_datetime(path):
     try:
@@ -98,7 +124,11 @@ def process_photo(path):
         return
 
     if not has_exif_datetime(path):
-        chosen_dt = get_best_file_time(path)
+        if WHATSAPP_MODE:
+            chosen_dt = get_whatsapp_date_from_filename(path) or get_best_file_time(path)
+        else:
+            chosen_dt = get_best_file_time(path)
+
         if DRY_RUN:
             print(f"[DRY-RUN][PHOTO] Would set DateTimeOriginal for {path} -> {chosen_dt}")
             stats["photos_changed"] += 1
@@ -112,7 +142,11 @@ def process_photo(path):
         stats["skipped"] += 1
 
 def process_video(path):
-    chosen_dt = get_best_file_time(path)
+    if WHATSAPP_MODE:
+        chosen_dt = get_whatsapp_date_from_filename(path) or get_best_file_time(path)
+    else:
+        chosen_dt = get_best_file_time(path)
+
     formatted = chosen_dt.strftime("%Y-%m-%dT%H:%M:%S")
 
     root, ext = os.path.splitext(path)
